@@ -1,0 +1,6 @@
+--input dist
+--main-jar ui.jar
+--name "rock-n-call-ui"
+--main-class clojure.main
+--arguments -m
+--arguments rock-n-call.ui.core
