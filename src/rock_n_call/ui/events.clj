@@ -3,9 +3,10 @@
             [rock-n-call.common.pagerduty :as pd]
             [rock-n-call.common.time :as rnct]
             [rock-n-call.common.printer :as printer]
+            [rock-n-call.common.pto :as pto]
             [rock-n-call.ui.utils :as utils]
             [cljfx.api :as fx])
-  (:import [javafx.stage DirectoryChooser]
+  (:import [javafx.stage DirectoryChooser FileChooser]
            [javafx.event ActionEvent]
            [javafx.scene Node]
            [java.awt Desktop]
@@ -66,6 +67,12 @@
 
 (defmethod handler-fn ::change-dir [{:keys [^ActionEvent fx/event]}]
   {:change-dir {:event event}})
+
+(defmethod handler-fn ::choose-pto-file [{:keys [^ActionEvent fx/event]}]
+  {:choose-pto-file {:event event}})
+
+(defmethod handler-fn ::load-pto [{:keys [fx/event fx/context]}]
+  {:context (fx/swap-context context assoc :ptos (pto/file->maps event))})
 
 (defmethod handler-fn ::toggle-show-token [{:keys [fx/context]}]
   {:context (fx/swap-context context update :show-token not)})
@@ -178,13 +185,23 @@
   Dispatches the `::edit-config-field` event when complete, editing `:output-dir`"
   [{:keys [^ActionEvent event]} d!]
   (fx/on-fx-thread
-   (let [window (.getWindow (.getScene ^Node (.getTarget event)))
-         chooser (doto (DirectoryChooser.)
-                   (.setTitle "Open Directory"))]
-     (when-let [directory (.showDialog chooser window)]
-       (d! {:event-type ::edit-config-field
-            :fx/event (.getAbsolutePath directory)
-            :text-key :output-dir})))))
+    (let [window  (.getWindow (.getScene ^Node (.getTarget event)))
+          chooser (doto (DirectoryChooser.)
+                    (.setTitle "Open Directory"))]
+      (when-let [directory (.showDialog chooser window)]
+        (d! {:event-type ::edit-config-field
+             :fx/event   (.getAbsolutePath directory)
+             :text-key   :output-dir})))))
+
+(defn choose-pto-file
+  [{:keys [^ActionEvent event]} d!]
+  (fx/on-fx-thread
+    (let [window  (.getWindow (.getScene ^Node (.getTarget event)))
+          chooser (doto (FileChooser.)
+                    (.setTitle "Choose XLS sheet contianing PTO information"))]
+      (when-let [file (.showOpenDialog chooser window)]
+        (d! {:event-type ::load-pto
+             :fx/event   (.getAbsolutePath file)})))))
 
 (defn generate-sheet
   "Effect to handle sheet generation.
@@ -197,11 +214,11 @@
     (try
       (printer/export-xls args)
       (d! {:event-type ::add-recent-file
-           :f (:output-path args)})
+           :f          (:output-path args)})
       (catch Exception e
         (println e)
         (d! {:event-type ::update-status
-             :message "Error generating the Sheet..."})))))
+             :message    "Error generating the Sheet..."})))))
 
 (defmulti pagerduty-handler
   "Multimethod used to handle the `:pagerduty` effect with calls to the pagerduty API.
