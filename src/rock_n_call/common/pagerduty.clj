@@ -10,25 +10,25 @@
   Returns the parsed data for the given resource
   Applies `filter-fn` if provided"
   [{:keys [token query-params resource filter-fn]
-    :or {query-params {}
-         filter-fn identity}}]
+    :or   {query-params {}
+           filter-fn    identity}}]
   (println "Fetching " (name resource) "...")
-  (let [url (str "https://api.pagerduty.com/" (when resource (name resource)))
+  (let [url       (str "https://api.pagerduty.com/" (when resource (name resource)))
         http-opts {:headers {"Authorization" (str "Token token=" token)}
-                   :accept :json}
+                   :accept  :json}
         responses (loop [responses [{:more true}]]
                     (if (:more (first responses))
                       (let [query-str (cond-> query-params
                                         (:offset (first responses)) (assoc :offset (+ (:offset (first responses))
-                                                                                     (:limit (first responses))))
-                                        :always http/query-string)
-                            response @(http/get (str url "?" query-str)
+                                                                                      (:limit (first responses))))
+                                        :always                     http/query-string)
+                            response  @(http/get (str url "?" query-str)
                                                 http-opts)]
-                        (recur (cons 
-                                (-> response
-                                    :body
-                                    (json/parse-string keyword))
-                                responses)))
+                        (recur (cons
+                                 (-> response
+                                     :body
+                                     (json/parse-string keyword))
+                                 responses)))
                       responses))]
     (->> responses
          (keep #(get % resource))
@@ -59,14 +59,14 @@
   Groups such time intervals by `:user` (who was on call).
   Returns a map of user->oncalls"
   [{:keys [token timezone schedules]}]
-  (let [since (rnct/date->str (rnct/first-day-of-month))
-        until (rnct/date->str (rnct/first-day-of-next-month))]
-    (->> (pd-get! {:resource :oncalls
-                  :token token
-                  :query-params {"schedule_ids[]" (map :id schedules)
-                                 :time_zone timezone
-                                 :since since
-                                 :until until}})
+  (let [since (rnct/date->string (rnct/first-day-of-month) "YYYY-MM-dd")
+        until (rnct/date->string (rnct/first-day-of-next-month) "YYYY-MM-dd")]
+    (->> (pd-get! {:resource     :oncalls
+                   :token        token
+                   :query-params {"schedule_ids[]" (map :id schedules)
+                                  :time_zone       timezone
+                                  :since           since
+                                  :until           until}})
          (filter #(= 1 (:escalation_level %)))
          (map #(select-keys % [:start :end :user :escalation_policy]))
          (map rnct/parse-dates)

@@ -1,139 +1,162 @@
 (ns rock-n-call.common.time
-  (:require [cljc.java-time.zoned-date-time :as t]
-            [cljc.java-time.temporal.temporal :as temp]
-            [cljc.java-time.temporal.chrono-unit :as unit]
-            [cljc.java-time.day-of-week :as dow]
-            [cljc.java-time.format.date-time-formatter :as dtf]
-            [rock-n-call.common.holidays :as h]))
+  (:require [rock-n-call.common.holidays :as h]
+            [tick.alpha.api :as t])
+  (:import (java.time ZonedDateTime
+                      Instant)))
 
-(def now (t/now))
+(defn date->string
+  [date format]
+  (t/format (tick.format/formatter format) date))
 
-(defn format-date->str
-  "Formats a `date` object into a string following a `format` string"
-  [{:keys [format date] :or {format "dd/MM/YYYY"}}]
-  (dtf/format (dtf/of-pattern format) date))
+(defn format-now->str
+  [format]
+  (date->string (t/in (t/instant) "Europe/Prague") format))
 
-(defn format-now->str [format]
-  (format-date->str {:format format
-                     :date now}))
+(defn first-day-of-month
+  ([]
+   (first-day-of-month (t/int (t/month))))
+  ([month]
+   (first-day-of-month month (t/int (t/year))))
+  ([month year]
+   (-> (t/date (format "%d-%02d-%02d" year month 1))
+       (t/at "00:00")
+       (t/in "Europe/Prague"))))
 
-(defn date->str [date]
-  (format-date->str {:date date}))
+(defn first-day-of-next-month
+  []
+  (first-day-of-month (-> (t/month) t/int inc)))
 
-(defn first-day-of-month []
-  (t/of (t/get-year now) (t/get-month-value now) 1
-        0 0 0 0 (t/get-zone now)))
-
-(defn first-day-of-next-month []
-  (t/plus-months (first-day-of-month) 1))
-
-(defn parse-dates [{:keys [start end] :as schedule}]
-  (merge schedule {:start (t/parse start)
-                   :end (t/parse end)}))
+(defn parse-dates
+  [{:keys [start end] :as schedule}]
+  (letfn [(parse [in]
+            (-> in
+                (ZonedDateTime/parse)))]
+    (-> schedule
+        (assoc :tick/beginning (parse start))
+        (assoc :tick/end (parse end))
+        (dissoc :start :end))))
 
 (defn rounded-hour
   "Rounds time to HH:00, HH:30, or HH+1:00"
-  [datetime]
-  (let [tdt (t/truncated-to datetime unit/hours)
-        minutes (t/get-minute datetime)]
-    (t/plus-minutes tdt (cond-> 0
-                          (> minutes 14) (+ 30)
-                          (> minutes 44) (+ 30)))))
+  [t]
+  (let [truncated      (t/truncate t :hours)
+        minute         (t/minute t)
+        rounded-offset (cond-> 0
+                         (> minute 14) (+ 30)
+                         (> minute 44) (+ 30))]
+    (-> truncated
+        (t/>> (t/new-duration rounded-offset :minutes)))))
 
-(defn trim-dates [{:keys [start end] :as schedule}]
-  (let [rounded-start (rounded-hour start)
-        rounded-end (rounded-hour end)]
-    (merge schedule {:start (if (t/is-after rounded-start (first-day-of-month))
-                              rounded-start
-                              (first-day-of-month))
-                     :end (if (t/is-after rounded-end (first-day-of-next-month))
-                            (first-day-of-next-month)
-                            rounded-end)})))
+(defn trim-dates
+  [{:tick/keys [beginning end] :as schedule}]
+  (let [rounded-start (rounded-hour beginning)
+        rounded-end   (rounded-hour end)]
+    (assoc schedule
+           :tick/beginning (t/max rounded-start (first-day-of-month))
+           :tick/end (t/min rounded-end (first-day-of-next-month)))))
 
 (defn beginning-of-next-day
   "Given a date, returns midnight aka 00:00 of the next day"
-  [date-time]
-  (-> date-time
-      (t/truncated-to unit/days)
-      (t/plus-days 1)))
+  [d]
+  (t/>> (t/truncate d :days) (t/new-duration 1 :days)))
 
 (defn weekday-times
-  "Splits an daily interval into off-hours.
+  "Splits a daily interval into off-hours.
   Necessary for weekdays where oncall is not charged
   during working hours (9am - 6pm)"
-  [start end]
-  (let [nine-am (t/plus-hours (t/truncated-to start unit/days) 9)
-        six-pm (t/plus-hours (t/truncated-to start unit/days) 18)]
-    (filter some? [;; period between 0-9
-                   (when (t/is-after nine-am start)
-                     {:start start
-                      :end (if (t/is-after end nine-am)
-                             nine-am
-                             end)})
-                   ;; period between 18-24
-                   (when (t/is-after end six-pm)
-                     {:start (if (t/is-after start six-pm)
-                               start
-                               six-pm)
-                      :end end})])))
+  [beginning end]
+  (let [midnight (-> beginning (t/truncate :days))
+        oncall   {:tick/beginning beginning
+                  :tick/end       end}
+        work     {:tick/beginning (t/>> midnight (t/new-duration 9 :hours))
+                  :tick/end       (t/>> midnight (t/new-duration 18 :hours))}]
+    ;; https://www.juxt.land/tick/docs/index.html#_comparison_4
+    (case (t/relation oncall work)
+      (:during
+       :starts
+       :finishes)    []
+      (:preceded-by
+       :precedes)    [{:tick/beginning beginning
+                       :tick/end       end}]
+      (:meets
+       :overlaps
+       :finished-by) [{:tick/beginning (:tick/beginning oncall)
+                       :tick/end       (:tick/beginning work)}]
+      (:met-by
+       :overlapped-by
+       :started-by)  [{:tick/beginning (:tick/end work)
+                       :tick/end       (:tick/end oncall)}]
+      :contains      [{:tick/beginning (:tick/beginning oncall)
+                       :tick/end       (:tick/beginning work)}
+                      {:tick/beginning (:tick/end work)
+                       :tick/end       (:tick/end oncall)}])))
 
 (defn interval->dates
   "Splits a several-days interval into consecutive intervals
   of several hours during each day.
   Differenciates workdays and weekends/holidays"
-  [{:keys [start end] :as schedule}]
-  (loop [current-dt start
-         time-rows []]
-    (let [next-dt (beginning-of-next-day current-dt)]
-      (if (t/is-after end current-dt)
+  [{:tick/keys [beginning end] :as schedule}]
+  (loop [current-dt beginning
+         time-rows  []]
+    (let [next-dt     (beginning-of-next-day current-dt)
+          day-of-week (t/day-of-week current-dt)]
+      (if (t/> end current-dt)
         ;; loop into next day
-        (if (or (dow/equals dow/saturday (dow/from current-dt))
-                (dow/equals dow/sunday (dow/from current-dt))
+        (if (or (#{t/SATURDAY t/SUNDAY} day-of-week)
                 (h/holiday? current-dt))
           (recur next-dt
                  (concat time-rows
-                         (list (merge schedule
-                                      {:start current-dt
-                                       :end (if (t/is-after end next-dt)
-                                              next-dt
-                                              end)} ))))
+                         (list (assoc schedule
+                                      :tick/beginning current-dt
+                                      :tick/end   (t/min end next-dt)))))
           (recur next-dt
                  (concat time-rows
                          (map (partial merge schedule)
                               (weekday-times current-dt
-                                             (if (t/is-after end next-dt)
-                                               next-dt
-                                               end))))))
+                                             (t/min end next-dt))))))
         ;; exit loop
         time-rows))))
 
 (defn interval->hours
-  [{:keys [start end]}]
-  (-> (temp/until start end unit/minutes)
-      (/ 60)
+  [interval]
+  (-> (t/divide-by (t/new-duration 30 :minutes) interval)
+      count
+      (/ 2)
       float))
 
 (defn date->row
   "Given an interval, generates the corresponding row for the oncall sheet"
-  [{:keys [start end] :as interval}]
-  (let [time-format (dtf/of-pattern "HH:mm")
-        date-format (dtf/of-pattern "dd/MM/YYYY")
-        start-str (dtf/format time-format start)
-        end-str (dtf/format time-format end)]
-    (list (dtf/format date-format start)
-          start-str
-          (if (= end-str "00:00")
+  [{:tick/keys [beginning end] :as interval}]
+  (let [st (date->string beginning "HH:mm")
+        en (date->string end "HH:mm")]
+    (list (date->string beginning "dd/MM/YYYY")
+          st
+          (if (= en "00:00")
             "24:00"
-            end-str)
+            en)
           (interval->hours interval))))
 
+(->> {:start "2021-07-05T00:34:00-04:00"
+      :user  {:id "123"}
+      :end   "2021-07-08T12:00:00-04:00"}
+     parse-dates
+     trim-dates
+     interval->dates
+     (map date->row)
+     )
 
 (comment
-  (->> {:start "2021-02-05T00:34:00-04:00"
-       :user {:id "123"}
-       :end "2021-02-07T12:00:00-04:00"}
-      parse-dates
-      trim-dates
-      interval->dates
-      (map date->row))
+  (#{t/SATURDAY t/SUNDAY}
+    (-> (t/instant)
+        t/day-of-week))
+  (t/day-of-week (t/instant))
+  (->> {:start "2021-07-05T00:34:00-04:00"
+        :user  {:id "123"}
+        :end   "2021-07-08T12:00:00-04:00"}
+       parse-dates
+       trim-dates
+       interval->dates
+       (map date->row)
+       )
   )
+

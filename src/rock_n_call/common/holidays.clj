@@ -1,6 +1,11 @@
 (ns rock-n-call.common.holidays
-  (:require [cljc.java-time.zoned-date-time :as t]
-            [cljc.java-time.local-date :as ld]))
+  (:require [tick.alpha.api :as t]))
+
+(defn ->instant
+  [year month day]
+  (-> (t/date (format "%d-%02d-%02d" year month day))
+      (t/at "00:00")
+      (t/in "Europe/Prague")))
 
 (defn easter-sunday
   "Compute Easter Sunday given year - using Spencer Jones formula."
@@ -23,34 +28,32 @@
 
 (defn easter [year]
   (let [{:keys [month day]} (easter-sunday year)]
-    (ld/of year month day)))
+    (->instant year month day)))
 
-
-(defn holidays
+(defn czech-holidays
   "Lists all holidays in a given year"
   [year]
-  [(ld/of year 1 1)
-   (ld/minus-days (easter year) 2)
-   (ld/plus-days (easter year) 1)
-   (ld/of year 5 1)
-   (ld/of year 5 8)
-   (ld/of year 7 5)
-   (ld/of year 7 6)
-   (ld/of year 9 28)
-   (ld/of year 10 28)
-   (ld/of year 11 17)
-   (ld/of year 12 24)
-   (ld/of year 12 25)
-   (ld/of year 12 26)])
+  [(->instant year 1 1)
+   (t/<< (easter year) (t/new-period 2 :days))
+   (t/>> (easter year) (t/new-period 1 :days))
+   (->instant year 5 1)
+   (->instant year 5 8)
+   (->instant year 7 5)
+   (->instant year 7 6)
+   (->instant year 9 28)
+   (->instant year 10 28)
+   (->instant year 11 17)
+   (->instant year 12 24)
+   (->instant year 12 25)
+   (->instant year 12 26)])
 
 (defn holiday?
-  "Given a datetime, return `true` if the date is a holiday in Czech republic
+  "Given an instant, return `true` if the date is a holiday in Czech republic
   Return `false` otherwise"
-  [datetime]
-  (let [date (ld/from datetime)
-        year (ld/get-year date)]
-    (some #(ld/equals % date) (holidays year))))
+  [instant]
+  (let [year (-> instant t/year t/int)]
+    (some #(= (t/date %) (t/date instant)) (czech-holidays year))))
 
 (comment
-  (holiday? (ld/of 2020 5 1))
-  (holiday? (ld/of 2020 5 2)))
+  (holiday? (->instant 2020 5 1))
+  (holiday? (->instant 2020 5 2)))
