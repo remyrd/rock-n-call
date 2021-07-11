@@ -72,7 +72,9 @@
   {:choose-pto-file {:event event}})
 
 (defmethod handler-fn ::load-pto [{:keys [fx/event fx/context]}]
-  {:context (fx/swap-context context assoc :ptos (pto/file->maps event))})
+  {:context  (fx/swap-context context assoc :ptos (pto/file->maps event))
+   :dispatch {:event-type ::update-status
+              :message    (format "Loaded PTO file from %s" event)}})
 
 (defmethod handler-fn ::toggle-show-token [{:keys [fx/context]}]
   {:context (fx/swap-context context update :show-token not)})
@@ -100,16 +102,18 @@
   {:context context})
 
 (defmethod handler-fn ::choose-team [{:keys [fx/event fx/context]}]
-  (let [schedules (fx/sub-val context :schedules)
+  (let [schedules      (fx/sub-val context :schedules)
+        ptos           (fx/sub-val context :ptos)
         team-schedules (filter (partial pd/contains-team? event) schedules)
-        timezone (fx/sub-val context #(get-in % [:config :timezone]))]
-    {:context (fx/swap-context context #(assoc %
-                                               :chosen-team event
-                                               :status (format "Status: Loading %s" (:summary event))))
+        timezone       (fx/sub-val context #(get-in % [:config :timezone]))]
+    {:context   (fx/swap-context context #(assoc %
+                                                 :chosen-team event
+                                                 :status (format "Status: Loading %s" (:summary event))))
      :pagerduty {:event-type ::load-team
-                 :token (fx/sub-val context #(get-in % [:config :token]))
-                 :timezone timezone
-                 :schedules team-schedules}} ))
+                 :token      (fx/sub-val context #(get-in % [:config :token]))
+                 :timezone   timezone
+                 :schedules  team-schedules
+                 :ptos       ptos}} ))
 
 (defmethod handler-fn ::put-team-to-state [{:keys [fx/context team]}]
   {:context (fx/swap-context context merge {:team team

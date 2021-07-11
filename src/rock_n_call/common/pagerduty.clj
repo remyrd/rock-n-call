@@ -58,20 +58,20 @@
   Eg. Monday from 3am-8pm becomes 3am-9am, 6pm-8pm.
   Groups such time intervals by `:user` (who was on call).
   Returns a map of user->oncalls"
-  [{:keys [token timezone schedules]}]
+  [{:keys [token timezone schedules ptos]}]
   (let [since (rnct/date->str (rnct/first-day-of-month))
         until (rnct/date->str (rnct/first-day-of-next-month))]
-    (->> (pd-get! {:resource :oncalls
-                  :token token
-                  :query-params {"schedule_ids[]" (map :id schedules)
-                                 :time_zone timezone
-                                 :since since
-                                 :until until}})
+    (->> (pd-get! {:resource     :oncalls
+                   :token        token
+                   :query-params {"schedule_ids[]" (map :id schedules)
+                                  :time_zone       timezone
+                                  :since           since
+                                  :until           until}})
          (filter #(= 1 (:escalation_level %)))
          (map #(select-keys % [:start :end :user :escalation_policy]))
          (map rnct/parse-dates)
          (map rnct/trim-dates)
-         (mapcat rnct/interval->dates)
+         (mapcat #(rnct/interval->dates % ptos))
          (group-by #(get-in % [:user :summary]))
          (into {}))))
 

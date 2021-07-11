@@ -9,8 +9,7 @@
       (update :employeeid #(re-find #"7.*" %))
       (update :lastname #(-> % (str/split #" ") first)) ;; hispanic surnames...
       (assoc :employee (->> ((juxt :firstname :lastname) row)
-                            (str/join "." )
-                            str/lower-case))
+                            (str/join " " )))
       (dissoc :firstname :lastname)))
 
 (defn file->maps
@@ -33,7 +32,20 @@
          (map format-row))))
 
 (comment
+  (require '[cljc.java-time.zoned-date-time :as t])
   (-> "abc" (str/split #" ") first)
-  (filter #(re-find #"remy.*" (:employee %)) (file->maps "example.xlsx"))
+  (filter #(seq (:comment %)) (file->maps "example.xlsx"))
+  (let [{abc 1.0
+         bcd 0.5} (->>
+                    (filter #(re-find #"Rem.*" (:employee %)) (file->maps "example.xlsx"))
+                    (map #(select-keys % [:days :date]))
+                    (map #(assoc % :date (.toInstant (:date %))))
+                    (map #(assoc % :date (t/of-instant (:date %) (t/get-zone (t/now)))))
+                    (map #(assoc % :date (t/to-local-date (:date %))))
+                    (group-by :days)
+                    (map (fn [[k v]] [k  (set (map :date v))]))
+                    (into {}))]
+    (bcd (t/to-local-date (t/now))))
+  (#{(t/to-local-date (t/now))} (t/to-local-date (t/now)))
   (group-by :employee (file->maps "example.xlsx")))
 
