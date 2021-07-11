@@ -61,51 +61,73 @@
   "Splits an daily interval into off-hours.
   Necessary for weekdays where oncall is not charged
   during working hours (9am - 6pm)"
-  [start end]
-  (let [nine-am (t/plus-hours (t/truncated-to start unit/days) 9)
-        six-pm (t/plus-hours (t/truncated-to start unit/days) 18)]
+  [start end half-day-ptos]
+  (let [is-pto?    (and half-day-ptos
+                        (half-day-ptos (t/to-local-date start))
+                        (t/plus-hours (t/truncated-to start unit/days) 14))
+        start-work (or is-pto?
+                       (t/plus-hours (t/truncated-to start unit/days) 9))
+        end-work   (t/plus-hours (t/truncated-to start unit/days) 18)]
     (filter some? [;; period between 0-9
-                   (when (t/is-after nine-am start)
+                   (when (t/is-after start-work start)
                      {:start start
-                      :end (if (t/is-after end nine-am)
-                             nine-am
-                             end)})
+                      :pto   is-pto?
+                      :end   (if (t/is-after end start-work)
+                               start-work
+                               end)})
                    ;; period between 18-24
-                   (when (t/is-after end six-pm)
-                     {:start (if (t/is-after start six-pm)
+                   (when (t/is-after end end-work)
+                     {:start (if (t/is-after start end-work)
                                start
-                               six-pm)
-                      :end end})])))
+                               end-work)
+                      :pto   is-pto?
+                      :end   end})])))
 
 (defn interval->dates
   "Splits a several-days interval into consecutive intervals
   of several hours during each day.
   Differenciates workdays and weekends/holidays"
-  [{:keys [start end] :as schedule}]
-  (loop [current-dt start
-         time-rows []]
-    (let [next-dt (beginning-of-next-day current-dt)]
-      (if (t/is-after end current-dt)
-        ;; loop into next day
-        (if (or (dow/equals dow/saturday (dow/from current-dt))
-                (dow/equals dow/sunday (dow/from current-dt))
-                (h/holiday? current-dt))
-          (recur next-dt
-                 (concat time-rows
-                         (list (merge schedule
-                                      {:start current-dt
-                                       :end (if (t/is-after end next-dt)
-                                              next-dt
-                                              end)} ))))
-          (recur next-dt
-                 (concat time-rows
-                         (map (partial merge schedule)
-                              (weekday-times current-dt
-                                             (if (t/is-after end next-dt)
-                                               next-dt
-                                               end))))))
-        ;; exit loop
-        time-rows))))
+  [{:keys [start end user] :as schedule} ptos]
+  (let [{full-day-ptos 1.0
+         half-day-ptos 0.5} (->> ptos
+                                 ;; TODO transducer
+                                 (filter #(= (:summary user) (:employee %)))
+                                 (map #(select-keys % [:days :date]))
+                                 (map #(assoc % :date (.toInstant (:date %))))
+                                 (map #(assoc % :date (t/of-instant (:date %) (t/get-zone (t/now)))))
+                                 (map #(assoc % :date (t/to-local-date (:date %))))
+                                 (group-by :days)
+                                 (map (fn [[k v]] [k  (set (map :date v))]))
+                                 (into {}))]
+    (loop [current-dt start
+           time-rows  []]
+      (let [next-dt       (beginning-of-next-day current-dt)
+            full-day-pto? (and full-day-ptos
+                               (full-day-ptos (t/to-local-date current-dt)))]
+        (if (t/is-after end current-dt)
+          ;; loop into next day
+          (if (or (dow/equals dow/saturday (dow/from current-dt))
+                  (dow/equals dow/sunday (dow/from current-dt))
+                  (h/holiday? current-dt)
+                  full-day-pto?)
+            (recur next-dt
+                   (concat time-rows
+                           (list (merge schedule
+                                        {:start current-dt
+                                         :pto   full-day-pto?
+                                         :end   (if (t/is-after end next-dt)
+                                                  next-dt
+                                                  end)} ))))
+            (recur next-dt
+                   (concat time-rows
+                           (map (partial merge schedule)
+                                (weekday-times current-dt
+                                               (if (t/is-after end next-dt)
+                                                 next-dt
+                                                 end)
+                                               half-day-ptos)))))
+          ;; exit loop
+          time-rows)))))
 
 (defn interval->hours
   [{:keys [start end]}]
@@ -115,25 +137,28 @@
 
 (defn date->row
   "Given an interval, generates the corresponding row for the oncall sheet"
-  [{:keys [start end] :as interval}]
+  [{:keys [start end pto] :as interval}]
   (let [time-format (dtf/of-pattern "HH:mm")
         date-format (dtf/of-pattern "dd/MM/YYYY")
-        start-str (dtf/format time-format start)
-        end-str (dtf/format time-format end)]
+        start-str   (dtf/format time-format start)
+        end-str     (dtf/format time-format end)]
     (list (dtf/format date-format start)
           start-str
           (if (= end-str "00:00")
             "24:00"
             end-str)
-          (interval->hours interval))))
+          (interval->hours interval)
+          (when pto "PTO"))))
 
 
 (comment
-  (->> {:start "2021-02-05T00:34:00-04:00"
-       :user {:id "123"}
-       :end "2021-02-07T12:00:00-04:00"}
-      parse-dates
-      trim-dates
-      interval->dates
-      (map date->row))
+  (require '[rock-n-call.common.pto :refer [file->maps]])
+  (def ptos (file->maps "example2.xlsx"))
+  (->> {:start "2021-07-01T00:34:00-02:00"
+        :user  {:id "123" :summary "Remy Rojas"}
+        :end   "2021-07-14T12:00:00-02:00"}
+       parse-dates
+       trim-dates
+       (#(interval->dates % ptos))
+       (map date->row))
   )

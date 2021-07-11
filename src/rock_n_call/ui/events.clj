@@ -3,9 +3,10 @@
             [rock-n-call.common.pagerduty :as pd]
             [rock-n-call.common.time :as rnct]
             [rock-n-call.common.printer :as printer]
+            [rock-n-call.common.pto :as pto]
             [rock-n-call.ui.utils :as utils]
             [cljfx.api :as fx])
-  (:import [javafx.stage DirectoryChooser]
+  (:import [javafx.stage DirectoryChooser FileChooser]
            [javafx.event ActionEvent]
            [javafx.scene Node]
            [java.awt Desktop]
@@ -67,6 +68,14 @@
 (defmethod handler-fn ::change-dir [{:keys [^ActionEvent fx/event]}]
   {:change-dir {:event event}})
 
+(defmethod handler-fn ::choose-pto-file [{:keys [^ActionEvent fx/event]}]
+  {:choose-pto-file {:event event}})
+
+(defmethod handler-fn ::load-pto [{:keys [fx/event fx/context]}]
+  {:context  (fx/swap-context context assoc :ptos (pto/file->maps event))
+   :dispatch {:event-type ::update-status
+              :message    (format "Loaded PTO file from %s" event)}})
+
 (defmethod handler-fn ::toggle-show-token [{:keys [fx/context]}]
   {:context (fx/swap-context context update :show-token not)})
 
@@ -93,16 +102,18 @@
   {:context context})
 
 (defmethod handler-fn ::choose-team [{:keys [fx/event fx/context]}]
-  (let [schedules (fx/sub-val context :schedules)
+  (let [schedules      (fx/sub-val context :schedules)
+        ptos           (fx/sub-val context :ptos)
         team-schedules (filter (partial pd/contains-team? event) schedules)
-        timezone (fx/sub-val context #(get-in % [:config :timezone]))]
-    {:context (fx/swap-context context #(assoc %
-                                               :chosen-team event
-                                               :status (format "Status: Loading %s" (:summary event))))
+        timezone       (fx/sub-val context #(get-in % [:config :timezone]))]
+    {:context   (fx/swap-context context #(assoc %
+                                                 :chosen-team event
+                                                 :status (format "Status: Loading %s" (:summary event))))
      :pagerduty {:event-type ::load-team
-                 :token (fx/sub-val context #(get-in % [:config :token]))
-                 :timezone timezone
-                 :schedules team-schedules}} ))
+                 :token      (fx/sub-val context #(get-in % [:config :token]))
+                 :timezone   timezone
+                 :schedules  team-schedules
+                 :ptos       ptos}} ))
 
 (defmethod handler-fn ::put-team-to-state [{:keys [fx/context team]}]
   {:context (fx/swap-context context merge {:team team
@@ -178,13 +189,23 @@
   Dispatches the `::edit-config-field` event when complete, editing `:output-dir`"
   [{:keys [^ActionEvent event]} d!]
   (fx/on-fx-thread
-   (let [window (.getWindow (.getScene ^Node (.getTarget event)))
-         chooser (doto (DirectoryChooser.)
-                   (.setTitle "Open Directory"))]
-     (when-let [directory (.showDialog chooser window)]
-       (d! {:event-type ::edit-config-field
-            :fx/event (.getAbsolutePath directory)
-            :text-key :output-dir})))))
+    (let [window  (.getWindow (.getScene ^Node (.getTarget event)))
+          chooser (doto (DirectoryChooser.)
+                    (.setTitle "Open Directory"))]
+      (when-let [directory (.showDialog chooser window)]
+        (d! {:event-type ::edit-config-field
+             :fx/event   (.getAbsolutePath directory)
+             :text-key   :output-dir})))))
+
+(defn choose-pto-file
+  [{:keys [^ActionEvent event]} d!]
+  (fx/on-fx-thread
+    (let [window  (.getWindow (.getScene ^Node (.getTarget event)))
+          chooser (doto (FileChooser.)
+                    (.setTitle "Choose XLS sheet contianing PTO information"))]
+      (when-let [file (.showOpenDialog chooser window)]
+        (d! {:event-type ::load-pto
+             :fx/event   (.getAbsolutePath file)})))))
 
 (defn generate-sheet
   "Effect to handle sheet generation.
@@ -197,11 +218,11 @@
     (try
       (printer/export-xls args)
       (d! {:event-type ::add-recent-file
-           :f (:output-path args)})
+           :f          (:output-path args)})
       (catch Exception e
         (println e)
         (d! {:event-type ::update-status
-             :message "Error generating the Sheet..."})))))
+             :message    "Error generating the Sheet..."})))))
 
 (defmulti pagerduty-handler
   "Multimethod used to handle the `:pagerduty` effect with calls to the pagerduty API.
